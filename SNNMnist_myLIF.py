@@ -16,7 +16,7 @@ import numpy as np
 from spikingjelly.activation_based import neuron, encoding, functional, surrogate, layer
 
 class myLIFNode(nn.Module):
-    def __init__(self, tau=2.0, surrogate_function=surrogate.ATan(), threshold=1.0, reset_voltage=0.0):
+    def __init__(self, tau=None, surrogate_function=None, threshold=1.0, reset_voltage=0.0):
         super().__init__()
         self.tau = tau  # 时间常数
         self.surrogate_function = surrogate_function  # 替代函数
@@ -30,8 +30,7 @@ class myLIFNode(nn.Module):
             self.v = torch.zeros_like(x)
 
         # 更新膜电位：考虑输入电流和衰减
-        #self.v = self.v + (x - self.v) / self.tau
-        self.v = self.v.detach() + (x - self.v.detach()) / self.tau
+        self.v = self.v + (x - self.v) / self.tau
 
         # 判断是否发放脉冲
         spike = (self.v >= self.threshold).float()
@@ -39,11 +38,16 @@ class myLIFNode(nn.Module):
         # 用替代函数计算梯度，用于反向传播
         spike_bp = self.surrogate_function(self.v - self.threshold)
 
+        spike = spike + spike_bp - spike.detach()  # 保持梯度流动
+
         # 发放后，膜电位重置
-        self.v = torch.where(spike > 0, self.reset_voltage, self.v)
+        self.v = torch.where(spike > 0, torch.full_like(self.v,self.reset_voltage), self.v)
 
-        return spike_bp
+        return spike
 
+    def reset(self):
+        """重置膜电位"""
+        self.v = None
 
 
 class SNN(nn.Module):
@@ -88,7 +92,7 @@ def main():
                         help='number of total epochs to run')
     parser.add_argument('-j', default=4, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
-    parser.add_argument('-data-dir', type=str, help='root dir of MNIST dataset')
+    parser.add_argument('-data-dir', default='../dataset/mnist, type=str', help='root dir of MNIST dataset')
     parser.add_argument('-out-dir', type=str, default='./logs', help='root dir for saving logs and checkpoint')
     parser.add_argument('-resume', type=str, help='resume from the checkpoint path')
     parser.add_argument('-amp', action='store_true', help='automatic mixed precision training')
