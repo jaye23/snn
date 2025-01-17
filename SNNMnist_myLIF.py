@@ -14,14 +14,15 @@ import torchvision
 import numpy as np
 
 from spikingjelly.activation_based import neuron, encoding, functional, surrogate, layer
+from spikingjelly.activation_based.base import MemoryModule
 
-class myLIFNode(nn.Module):
-    def __init__(self, tau=None, surrogate_function=None, threshold=1.0, reset_voltage=0.0):
+class myLIFNode(MemoryModule):
+    def __init__(self, tau=None, surrogate_function=None, v_threshold=1.0, v_reset=0.0):
         super().__init__()
         self.tau = tau  # 时间常数
         self.surrogate_function = surrogate_function  # 替代函数
-        self.threshold = threshold  # 发放阈值
-        self.reset_voltage = reset_voltage  # 重置电压
+        self.threshold = v_threshold  # 发放阈值
+        self.v_reset = v_reset  # 重置电压
         self.v = None  # 膜电位
 
     def forward(self, x: torch.Tensor):
@@ -41,7 +42,7 @@ class myLIFNode(nn.Module):
         spike = spike + spike_bp - spike.detach()  # 保持梯度流动
 
         # 发放后，膜电位重置
-        self.v = torch.where(spike > 0, torch.full_like(self.v,self.reset_voltage), self.v)
+        self.v = torch.where(spike > 0, torch.full_like(self.v,self.v_reset), self.v)
 
         return spike
 
@@ -66,24 +67,6 @@ class SNN(nn.Module):
 
 
 def main():
-    '''
-    :return: None
-
-    * :ref:`API in English <lif_fc_mnist.main-en>`
-
-    .. _lif_fc_mnist.main-cn:
-
-    使用全连接-LIF的网络结构，进行MNIST识别。\n
-    这个函数会初始化网络进行训练，并显示训练过程中在测试集的正确率。
-
-    * :ref:`中文API <lif_fc_mnist.main-cn>`
-
-    .. _lif_fc_mnist.main-en:
-
-    The network with FC-LIF structure for classifying MNIST.\n
-    This function initials the network, starts trainingand shows accuracy on test dataset.
-    '''
-
     parser = argparse.ArgumentParser(description='LIF MNIST Training')
     parser.add_argument('-T', default=100, type=int, help='simulating time-steps')
     parser.add_argument('-device', default='cuda:0', help='device')
