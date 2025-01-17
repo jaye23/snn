@@ -30,7 +30,8 @@ class myLIFNode(nn.Module):
             self.v = torch.zeros_like(x)
 
         # 更新膜电位：考虑输入电流和衰减
-        self.v = self.v + (x - self.v) / self.tau
+        #self.v = self.v + (x - self.v) / self.tau
+        self.v = self.v.detach() + (x - self.v.detach()) / self.tau
 
         # 判断是否发放脉冲
         spike = (self.v >= self.threshold).float()
