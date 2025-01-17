@@ -73,8 +73,8 @@ def main():
     parser.add_argument('-b', default=64, type=int, help='batch size')
     parser.add_argument('-epochs', default=100, type=int, metavar='N',
                         help='number of total epochs to run')
-    parser.add_argument('-j', default=4, type=int, metavar='N',
-                        help='number of data loading workers (default: 4)')
+    parser.add_argument('-j', default=2, type=int, metavar='N',
+                        help='number of data loading workers (default: 2)')
     parser.add_argument('-data-dir', default='../dataset/mnist, type=str', help='root dir of MNIST dataset')
     parser.add_argument('-out-dir', type=str, default='./logs', help='root dir for saving logs and checkpoint')
     parser.add_argument('-resume', type=str, help='resume from the checkpoint path')
