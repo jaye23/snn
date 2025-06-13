@@ -113,6 +113,7 @@ class DVSGestureNet(nn.Module):
         # --- ADDED: FSR 统计属性 for the target FC spiking layer ---
         self.spike_counts = torch.zeros(110, device=self.device)
         self.time_steps = 0  # 用于累积 T * B
+        self.register_buffer('pruning_mask_fc', torch.ones(self.spike_counts))#新增：注册一个pruning_mask。register_buffer会将其作为模型状态的一部分
 
     def forward(self, x: torch.Tensor):
         #     return self.conv_fc(x)
@@ -139,19 +140,29 @@ class DVSGestureNet(nn.Module):
         spikes_outputs = self.sn2(x)  # [T, B, 110] [16, 16, 110]
         # print("Shape after sn2:",spikes_outputs.shape)
 
+        # 新增：应用剪枝掩码
+        # self.pruning_mask_fc 形状是 [110]，会自动广播到 [T, B, 110]
+        pruned_spikes = spikes_outputs * self.pruning_mask_fc
+
+        #ADD：加入正则项
+        # .sum() 将所有维度的脉冲加起来，得到一个标量值
+        total_spikes_in_batch = pruned_spikes.sum()
+        total_tbn = pruned_spikes.numel()
+        total_spikes_in_batch = total_spikes_in_batch/total_tbn
+
         # --- ADDED: FSR 统计逻辑 for the target FC spiking layer ---
-        if spikes_outputs is not None:
+        if pruned_spikes is not None:
             # spikes_outputs 形状已经是 [T, B, num_neurons]
             # 对T和B维度求和，得到每个神经元的总脉冲数 (累加到模型属性)
-            self.spike_counts += spikes_outputs.sum(dim=[0, 1]).detach()
+            self.spike_counts += pruned_spikes.sum(dim=[0, 1]).detach()
             # 累积 T * B
-            self.time_steps += spikes_outputs.shape[0] * spikes_outputs.shape[1]
+            self.time_steps += pruned_spikes.shape[0] * pruned_spikes.shape[1]
 
         # fsr_per_neuron_epoch = self.spike_counts / self.time_steps
         # print('FSR:',fsr_per_neuron_epoch)
 
-        x = self.voting(spikes_outputs)
-        return x
+        x = self.voting(pruned_spikes)
+        return x,total_spikes_in_batch
         # x = self.conv_fc(x)  # 进入全连接层进行分类
         # return x
 
@@ -202,3 +213,27 @@ class DVSGestureNet(nn.Module):
             print("    观察总时间步数为零，无法计算FSR。")
 
         print("--- [再激活检查结束] ---\n")
+
+    def prune_fading_neurons(self, fsr_threshold=0.07):
+        fsr_per_neuron = self.spike_counts / self.time_steps
+        print('FSR before prune:', fsr_per_neuron)
+
+        neurons_to_prune_indices = torch.where(fsr_per_neuron < fsr_threshold)[0]
+
+        if len(neurons_to_prune_indices) > 0:
+            print(f"    根据最终FSR评估，将剪掉 {len(neurons_to_prune_indices)} 个不活跃神经元。")
+            # 创建一个新的掩码，默认所有神经元都保留 (值为1)
+            new_mask = torch.ones_like(self.pruning_mask_fc)
+            # 将需要剪掉的神经元对应位置设为0
+            new_mask[neurons_to_prune_indices] = 0.0
+
+            # 更新模型中的掩码
+            self.pruning_mask_fc.data = new_mask
+
+            # 统计剪枝后的保留神经元比例
+            retained_ratio = self.pruning_mask_fc.sum() / self.num_neurons_target_fc_layer
+            print(f"    剪枝完成。神经元保留率: {retained_ratio.item():.2%}")
+        else:
+            print("    没有神经元的FSR低于阈值，无需剪枝。")
+
+        print("--- [剪枝操作结束] ---\n")

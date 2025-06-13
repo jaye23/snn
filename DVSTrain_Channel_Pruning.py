@@ -64,9 +64,13 @@ def main():
 
     # --- 新增：定义标志位和触发阈值 ---
     reactivation_done = False  # 用于确保再激活只执行一次的标志位
-    reactivation_acc_threshold= 0.8 # 触发再激活的准确率阈值
+    prune_done = False  # 用于确保再激活只执行一次的标志位
+    reactivation_acc_threshold= 0.85 # 触发再激活的准确率阈值
     fsr_threshold = 0.07  # FSR阈值
     reactivation_epoch = -1  # 新增：用于记录再激活发生的epoch，-1代表还未发生
+    regular_lambda = 1e-4  # 新增：正则化强度超参数
+    prune_loss_threshold =0.0175# 触发剪枝损失阈值
+
 
     net = DVSNet_Channel_Pruning.DVSGestureNet(channels=args.channels, spiking_neuron=neuron.LIFNode, surrogate_function=surrogate.ATan(), detach_reset=True,PDP=PDP,snr=args.snr,device=args.device)
 
@@ -162,14 +166,22 @@ def main():
 
             if scaler is not None:
                 with amp.autocast():
-                    out_fr = net(frame).mean(0)
-                    loss = F.mse_loss(out_fr, label_onehot)
+                    out_fr,batch_spikes = net(frame).mean(0)
+                    main_loss = F.mse_loss(out_fr, label_onehot)
+                    if reactivation_done:
+                        loss =main_loss+ regular_lambda*batch_spikes
+                    else:
+                        loss=main_loss
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                out_fr = net(frame).mean(0)
-                loss = F.mse_loss(out_fr, label_onehot)
+                out_fr,batch_spikes = net(frame).mean(0)
+                main_loss = F.mse_loss(out_fr, label_onehot)
+                if reactivation_done:
+                    loss = main_loss + regular_lambda * batch_spikes
+                else:
+                    loss = main_loss
                 loss.backward()
                 optimizer.step()
 
@@ -227,6 +239,20 @@ def main():
             reactivation_epoch = epoch  # 新增：记录下当前epoch的编号
             print("神经元再激活已执行。")
 
+
+        # 判断是否剪枝
+        if test_loss <= prune_loss_threshold and not prune_done:
+            print(
+                f"\n训练loss ({test_loss:.4f}) 首次达到阈值 ({prune_loss_threshold:.2f})，进行剪枝...")
+
+            # 调用模型自身的再激活方法
+            net.prune_fading_neurons(fsr_threshold=fsr_threshold)
+
+            # 关键步骤：执行后立即更新标志位，防止重复调用
+            prune_done = True
+            prune_epoch = epoch  # 新增：记录下当前epoch的编号
+            print("神经元剪枝已执行。")
+
         save_max = False
         if test_acc > max_test_acc:
             max_test_acc = test_acc
@@ -271,7 +297,18 @@ def main():
         #
         # # 可选：在标记点旁边添加文字注释
         # plt.text(reactivation_epoch + 0.5, acc_at_reactivation, f' Acc: {acc_at_reactivation:.3f}', fontsize=9)
+        # 新增：如果再激活发生过，就在图上用一个特殊的点来标注
+        if prune_epoch != -1:
+            # 找到再激活那个epoch对应的训练准确率
+            # epoch_list 中的索引和 train_acc_list 中的索引是一一对应的
+            # (假设 epoch_list 是从0开始连续的，即 epoch_list[i] == i)
+            acc_at_prune = test_acc_list[prune_epoch - start_epoch]  # 修正索引，如果start_epoch不为0
 
+            plt.scatter(prune_done, acc_at_prune,
+                        color='green',  # 标记点的颜色
+                        s=100,  # 标记点的大小
+                        zorder=5,  # 确保标记点绘制在折线的上方
+                        label=f'prune at Epoch {prune_epoch}')  # 为标记点添加图例
 
     plt.xlabel('Epoch')
     plt.ylabel('Test Accuracy')
