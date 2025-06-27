@@ -289,7 +289,8 @@ def main():
         # # writer.add_scalar('test_loss', test_loss, epoch)
         # # writer.add_scalar('test_acc', test_acc, epoch)
 
-        if not pruning_started and test_loss <= args.prune_loss_threshold and test_acc >= args.prune_acc_threshold:
+        # if not pruning_started and test_loss <= args.prune_loss_threshold and test_acc >= args.prune_acc_threshold:
+        if not pruning_started and test_acc >= args.prune_acc_threshold:
             # 启动第一次剪枝
             num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=args.fsr_threshold)
             test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device, train_time)  # 你训练里的测试函数
