@@ -6,7 +6,7 @@ from torch.cuda import amp
 from spikingjelly.activation_based import functional, surrogate, neuron
 from spikingjelly.activation_based.model import parametric_lif_net
 from spikingjelly.datasets.dvs128_gesture import DVS128Gesture
-import DVSNet_Channel_Pruning_2
+import DVSNet_Channel_Pruning_Period
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
@@ -84,30 +84,44 @@ def main():
     parser.add_argument('-lr', default=0.001, type=float, help='learning rate')
     parser.add_argument('-channels', default=64, type=int, help='channels of CSNN')
     parser.add_argument('-snr', default=10, type=int, help='snr')
+    parser.add_argument('-pdp-values', type=float, nargs='+', default=[1.0, 0.5, 0.3, 0.2, 0.1],
+                        help='custom PDP values for pruning schedule')
+    parser.add_argument('-prune-acc-threshold', type=float, default=0.80,
+                        help='accuracy threshold to trigger pruning')
+    parser.add_argument('-prune-acc-stop', type=float, default=0.60,
+                        help='accuracy threshold to stop pruning')
+    parser.add_argument('-prune-loss-threshold', type=float, default=0.0175,
+                        help='loss threshold to trigger pruning')
+    parser.add_argument('-fsr-threshold', type=float, default=0.07,
+                        help='FSR threshold for pruning')
+    parser.add_argument('-regular-lambda', type=float, default=1e-4,
+                        help='regularization strength')
+    parser.add_argument('-min-neurons-threshold', type=int, default=10,
+                        help='minimum number of neurons to stop pruning')
 
 
     args = parser.parse_args()
     args.opt="adam"
     print(args)
 
-    pdp_values = torch.tensor([1.0, 0.5, 0.3, 0.2, 0.1])  # 自定义 PDP
-    PDP = pdp_values / pdp_values.sum()  # 归一化
+    # pdp_values = torch.tensor([1.0, 0.5, 0.3, 0.2, 0.1])  # 自定义 PDP
+    PDP = args.pdp_values / args.pdp_values.sum()  # 归一化
     PDP = PDP.to(args.device)  # 确保 PDP 在正确的计算设备上
 
     # --- 新增：定义标志位和触发阈值 ---
     pruning_started = False #标记开始剪枝
     prune_stopped = False  # 一旦 True，不再剪枝
-    prune_acc_threshold = 0.90  # 触发剪枝的准确率阈值
-    prune_acc_stop = 0.70  # 停止剪枝的准确率阈值
-    prune_loss_threshold = 0.0175  # 触发剪枝损失阈值
-    fsr_threshold = 0.07  # FSR阈值
+    # prune_acc_threshold = 0.80  # 触发剪枝的准确率阈值
+    # prune_acc_stop = 0.60  # 停止剪枝的准确率阈值
+    # prune_loss_threshold = 0.0175  # 触发剪枝损失阈值
+    # fsr_threshold = 0.07  # FSR阈值
     prune_epoch = []  # 新增：用于记录prune发生的epoch，-1代表还未发生
     neuron_acc_history = []
-    regular_lambda = 1e-4  # 新增：正则化强度超参数
-    min_neurons_threshold = 10  # 当保留的神经元数量小于或等于这个值时，将不再进行剪枝。
+    # regular_lambda = 1e-4  # 新增：正则化强度超参数
+    # min_neurons_threshold = 10  # 当保留的神经元数量小于或等于这个值时，将不再进行剪枝。
 
 
-    net = DVSNet_Channel_Pruning_2.DVSGestureNet(channels=args.channels, spiking_neuron=neuron.LIFNode, surrogate_function=surrogate.ATan(), detach_reset=True,PDP=PDP,snr=args.snr,device=args.device)
+    net = DVSNet_Channel_Pruning_Period.DVSGestureNet(channels=args.channels, spiking_neuron=neuron.LIFNode, surrogate_function=surrogate.ATan(), detach_reset=True,PDP=PDP,snr=args.snr,device=args.device)
 
     functional.set_step_mode(net, 'm')
     if args.cupy:
@@ -211,7 +225,7 @@ def main():
                     out_fr = output_with_time.mean(0)
                     main_loss = F.mse_loss(out_fr, label_onehot)
                     if prune_epoch:
-                        loss = main_loss + regular_lambda * batch_spikes
+                        loss = main_loss + args.regular_lambda * batch_spikes
                     else:
                         loss = main_loss
                 scaler.scale(loss).backward()
@@ -225,7 +239,7 @@ def main():
                 out_fr = output_with_time.mean(0)
                 main_loss = F.mse_loss(out_fr, label_onehot)
                 if prune_epoch:
-                    loss = main_loss + regular_lambda * batch_spikes
+                    loss = main_loss + args.regular_lambda * batch_spikes
                 else:
                     loss = main_loss
                 loss.backward()
@@ -276,9 +290,9 @@ def main():
         # # writer.add_scalar('test_loss', test_loss, epoch)
         # # writer.add_scalar('test_acc', test_acc, epoch)
 
-        if not pruning_started and test_loss <= prune_loss_threshold and test_acc >= prune_acc_threshold:
+        if not pruning_started and test_loss <= args.prune_loss_threshold and test_acc >= args.prune_acc_threshold:
             # 启动第一次剪枝
-            num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=fsr_threshold)
+            num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=args.fsr_threshold)
             test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device, train_time)  # 你训练里的测试函数
             pruning_started = True
             pruning_count = 1
@@ -293,19 +307,30 @@ def main():
         elif pruning_started and not prune_stopped:
             # 如果已开始剪枝，继续每隔20个epoch剪
             if (epoch - first_prune_epoch) % 20 == 0:
-                if test_acc > prune_acc_threshold:
-                    num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=fsr_threshold)
-                    test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device,train_time)  # 你训练里的测试函数
-                    pruning_count += 1
-                    prune_epoch.append(epoch)
-                    neuron_acc_history.append((num_pruned, test_acc))
+                num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=args.fsr_threshold)
+                test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device, train_time)  # 你训练里的测试函数
+                pruning_count += 1
+                prune_epoch.append(epoch)
+                neuron_acc_history.append((num_pruned, test_acc))
 
-                    print(f"\n--- 第 {pruning_count} 次剪枝已执行 (Epoch: {epoch}) ---")
-                    print(f" 剪掉神经元数量: {num_pruned}")
-                    print(f" 剪枝后剩余神经元数量: {num_retained}")
-                else:
-                    prune_stopped = True
-                    print(f"\n--- 剪枝终止：当前 test_acc={test_acc:.4f} <= 阈值 {prune_acc_threshold} ---")
+                print(f"\n--- 第 {pruning_count} 次剪枝已执行 (Epoch: {epoch}) ---")
+                print(f" 剪掉神经元数量: {num_pruned}")
+                print(f" 剪枝后剩余神经元数量: {num_retained}")
+
+
+                # if test_acc > prune_acc_threshold:
+                #     num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=fsr_threshold)
+                #     test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device,train_time)  # 你训练里的测试函数
+                #     pruning_count += 1
+                #     prune_epoch.append(epoch)
+                #     neuron_acc_history.append((num_pruned, test_acc))
+                #
+                #     print(f"\n--- 第 {pruning_count} 次剪枝已执行 (Epoch: {epoch}) ---")
+                #     print(f" 剪掉神经元数量: {num_pruned}")
+                #     print(f" 剪枝后剩余神经元数量: {num_retained}")
+                # else:
+                #     prune_stopped = True
+                #     print(f"\n--- 剪枝终止：当前 test_acc={test_acc:.4f} <= 阈值 {prune_acc_threshold} ---")
 
 
         save_max = False
