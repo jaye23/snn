@@ -4,18 +4,16 @@ import sys
 import torch.nn.functional as F
 from torch.cuda import amp
 from spikingjelly.activation_based import functional, surrogate, neuron
-from spikingjelly.activation_based.model import parametric_lif_net
+
 from spikingjelly.datasets.dvs128_gesture import DVS128Gesture
 import DVSNet_Channel_Pruning_Period
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+
 import torchvision.transforms as transforms
 import time
 import os
 import argparse
 import datetime
 import matplotlib.pyplot as plt
-# from IPython.display import Image, display
 
 
 class RandomTranslate:
@@ -98,7 +96,8 @@ def main():
                         help='regularization strength')
     parser.add_argument('-min-neurons-threshold', type=int, default=10,
                         help='minimum number of neurons to stop pruning')
-
+    parser.add_argument('-prune-period', type=int, default=20,
+                        help='pruning cycle in epochs (perform pruning every N epochs once triggered)')
 
     args = parser.parse_args()
     args.opt="adam"
@@ -306,7 +305,7 @@ def main():
 
         elif pruning_started and not prune_stopped:
             # 如果已开始剪枝，继续每隔20个epoch剪
-            if (epoch - first_prune_epoch) % 20 == 0:
+            if (epoch - first_prune_epoch) % args.prune_period == 0:
                 num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=args.fsr_threshold)
                 test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device, train_time)  # 你训练里的测试函数
                 pruning_count += 1
