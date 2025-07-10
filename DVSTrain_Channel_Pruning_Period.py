@@ -67,10 +67,10 @@ def main():
     parser = argparse.ArgumentParser(description='Classify DVS Gesture')
     parser.add_argument('-T', default=16, type=int, help='simulating time-steps')
     parser.add_argument('-device', default='cuda:0', help='device')
-    parser.add_argument('-b', default=16, type=int, help='batch size')
-    parser.add_argument('-epochs', default=128, type=int, metavar='N',
+    parser.add_argument('-b', default=32, type=int, help='batch size')
+    parser.add_argument('-epochs', default=512, type=int, metavar='N',
                         help='number of total epochs to run')
-    parser.add_argument('-j', default=4, type=int, metavar='N',
+    parser.add_argument('-j', default=12, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
     parser.add_argument('-data-dir', default=os.path.join(current_dir, "datasets", "DVS"), type=str, help='root dir of DVS Gesture dataset')
     parser.add_argument('-out-dir', type=str, default='./logs', help='root dir for saving logs and checkpoint')
@@ -84,16 +84,16 @@ def main():
     parser.add_argument('-snr', default=10, type=int, help='snr')
     parser.add_argument('-pdp-values', type=float, nargs='+', default=[1.0, 0.5, 0.3, 0.2, 0.1],
                         help='custom PDP values for pruning schedule')
-    parser.add_argument('-prune-acc-threshold', type=float, default=0.80,
+    parser.add_argument('-prune-acc-threshold', type=float, default=0.95,
                         help='accuracy threshold to trigger pruning')
     parser.add_argument('-prune-acc-stop', type=float, default=0.60,
                         help='accuracy threshold to stop pruning')
     parser.add_argument('-prune-loss-threshold', type=float, default=0.0175,
                         help='loss threshold to trigger pruning')
-    parser.add_argument('-fsr-threshold', type=float, default=0.07,
-                        help='FSR threshold for pruning')
-    parser.add_argument('-regular-lambda', type=float, default=1e-4,
-                        help='regularization strength')
+    parser.add_argument('-fsr-threshold', type=float, default=0.15,
+                        help='FSR threshold for pruning') #改一下
+    parser.add_argument('-regular-lambda', type=float, default=1e-3,
+                        help='regularization strength') #改一下1e-3  shell脚本跑多个参数，保留神经元到100以下
     parser.add_argument('-min-neurons-threshold', type=int, default=10,
                         help='minimum number of neurons to stop pruning')
     parser.add_argument('-prune-period', type=int, default=20,
@@ -104,7 +104,8 @@ def main():
     print(args)
 
     # pdp_values = torch.tensor([1.0, 0.5, 0.3, 0.2, 0.1])  # 自定义 PDP
-    PDP = args.pdp_values / args.pdp_values.sum()  # 归一化
+    pdp_values=torch.tensor(args.pdp_values)
+    PDP = pdp_values / pdp_values.sum()  # 归一化
     PDP = PDP.to(args.device)  # 确保 PDP 在正确的计算设备上
 
     # --- 新增：定义标志位和触发阈值 ---
@@ -170,6 +171,7 @@ def main():
         raise NotImplementedError(args.opt)
 
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
+    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 32)
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location='cpu')
@@ -202,6 +204,10 @@ def main():
     epoch_list = []
     pruning_count = 0
     first_prune_epoch = None  # 记录首次剪枝的 epoch
+    neuron_acc_history = []
+    last_prune_acc = None  # 每轮剪枝前一个 epoch 的 test_acc
+    # 在训练循环开始之前，初始化当前的FSR阈值
+    current_fsr_threshold = args.fsr_threshold
     for epoch in range(start_epoch, args.epochs):
         start_time = time.time()
         net.train()
@@ -261,6 +267,7 @@ def main():
 
         # test
         test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device, train_time)
+        last_prune_acc = test_acc
 
         # net.eval()
         # test_loss = 0
@@ -290,32 +297,53 @@ def main():
         # # writer.add_scalar('test_acc', test_acc, epoch)
 
         # if not pruning_started and test_loss <= args.prune_loss_threshold and test_acc >= args.prune_acc_threshold:
-        if not pruning_started and test_acc >= args.prune_acc_threshold:
+
+        if not pruning_started and test_acc >= args.prune_acc_threshold and epoch >=150:
             # 启动第一次剪枝
-            num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=args.fsr_threshold)
+            num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold= current_fsr_threshold)
+            print(f" 剪枝的FSR阈值是: {current_fsr_threshold:.4f}")
             test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device, train_time)  # 你训练里的测试函数
             pruning_started = True
             pruning_count = 1
             first_prune_epoch=epoch
+            current_fsr_threshold +=0.15
             prune_epoch.append(epoch)
-            neuron_acc_history.append((num_pruned, test_acc))
+            # neuron_acc_history.append((num_pruned, test_acc))
+
+            neuron_acc_history.append((num_pruned, last_prune_acc if last_prune_acc is not None else test_acc,num_retained))
+            last_prune_acc = None  # 重置
 
             print(f"\n--- 第 {pruning_count} 次剪枝已执行 (Epoch: {epoch}) ---")
             print(f" 剪掉神经元数量: {num_pruned}")
-            print(f" 剪枝后剩余神经元数量: {num_retained}")
+            # print(f" 剪枝后剩余神经元数量: {num_retained}")
 
         elif pruning_started and not prune_stopped:
+            # if num_retained < 100:
+            #     print(f" ⚠️ 剪枝后剩余神经元为 {num_retained}，少于最小要求 100，停止进一步剪枝。")
+            #     prune_stopped = True
+
             # 如果已开始剪枝，继续每隔20个epoch剪
             if (epoch - first_prune_epoch) % args.prune_period == 0:
-                num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=args.fsr_threshold)
+                num_retained, num_pruned = net.prune_fading_neurons(fsr_threshold=current_fsr_threshold)
+                print(f" 剪枝的FSR阈值是: {current_fsr_threshold:.4f}")
                 test_loss, test_acc, test_speed = evaluate(net, test_data_loader, args.device, train_time)  # 你训练里的测试函数
+                if 100 <= num_retained < 200:
+                    current_fsr_threshold += 0.05
+                elif num_retained < 100:
+                    current_fsr_threshold += 0.01
+                elif num_retained < 50:
+                    current_fsr_threshold += 0.005
+                else:
+                    current_fsr_threshold += 0.15
                 pruning_count += 1
                 prune_epoch.append(epoch)
-                neuron_acc_history.append((num_pruned, test_acc))
+                # neuron_acc_history.append((num_pruned, test_acc))
+                neuron_acc_history.append((num_pruned, last_prune_acc if last_prune_acc is not None else test_acc,num_retained))
+                last_prune_acc = None  # 重置
 
                 print(f"\n--- 第 {pruning_count} 次剪枝已执行 (Epoch: {epoch}) ---")
                 print(f" 剪掉神经元数量: {num_pruned}")
-                print(f" 剪枝后剩余神经元数量: {num_retained}")
+                # print(f" 剪枝后剩余神经元数量: {num_retained}")
 
 
                 # if test_acc > prune_acc_threshold:
@@ -359,6 +387,9 @@ def main():
         train_acc_list.append(train_acc)
         test_acc_list.append(test_acc)
         epoch_list.append(epoch)
+
+    # --- 训练结束后记录最后一轮表现 ---
+    neuron_acc_history.append((None, test_acc,None))
 
     # plt.figure()
     # plt.plot(epoch_list, train_acc_list, label=f'SNR={args.snr}')
@@ -413,6 +444,9 @@ def main():
     # 画测试准确率曲线
     plt.plot(epoch_list, test_acc_list, label=f'Test Accuracy (SNR={args.snr})', color='black')
 
+    plt.axhline(y=0.95, color='green', linestyle='--', linewidth=1, alpha=0.8, label='Accuracy = 0.95')
+    plt.axhline(y=0.90, color='orange', linestyle='--', linewidth=1, alpha=0.8, label='Accuracy = 0.90')
+
     # 剪枝点：画垂直线 + 标注 + 点
     for i, prune_ep in enumerate(prune_epoch):
         plt.axvline(x=prune_ep, color='red', linestyle='--', alpha=0.7)
@@ -431,12 +465,15 @@ def main():
     plt.legend()  # 自动根据 label 添加图例
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(f'acc_snr_{args.snr}_channel_prune_combined.png')
+    plt.savefig(f'acc_snr_{args.snr}_start_fsr_{args.fsr_threshold}_lambda_{args.regular_lambda}_channel_prune_period_slow_limit_4.png')
     plt.show()
 
     # 拆分 neuron_acc_history 为两个列表
-    pruned_counts = [item[0] for item in neuron_acc_history]  # 横轴
-    test_accs = [item[1] for item in neuron_acc_history]  # 纵轴
+    # pruned_counts = [item[0] for item in neuron_acc_history]  # 横轴
+    # test_accs = [item[1] for item in neuron_acc_history]  # 纵轴
+    pruned_counts = [item[0] for item in neuron_acc_history[:-1]]  # 去掉最后一个，保证长度一致
+    test_accs = [item[1] for item in neuron_acc_history[1:]]  # 从第二个开始，错位一位
+    num_retained = [item[2] for item in neuron_acc_history[:-1]]
 
     plt.figure()
     plt.plot(pruned_counts, test_accs, marker='o', linestyle='-', color='blue')
@@ -444,11 +481,47 @@ def main():
     plt.ylabel('Test Accuracy After Pruning')
     plt.title('Test Accuracy vs Pruned Neurons')
     plt.grid(True)
+
+    # 添加文本标签
+    # for x, y in zip(pruned_counts, test_accs):
+    #     plt.text(x, y+0.002, f'{x}', fontsize=8, ha='left', va='bottom')  # 可调字体大小与位置
+
+    for i, (x, y) in enumerate(zip(pruned_counts, test_accs)):
+        offset = 0.002 if i % 2 == 0 else -0.004  # 偶数向上、奇数向下
+        plt.text(x, y + offset, f'{x}', fontsize=8, ha='center', va='bottom' if offset > 0 else 'top')
+
     plt.tight_layout()
-    plt.savefig(f'test_acc_vs_pruned_neurons_snr_{args.snr}.png')
+    plt.savefig(f'test_acc_vs_pruned_neurons_snr_{args.snr}_start_fsr_{args.fsr_threshold}_lambda_{args.regular_lambda}_period_slow_limit_4.png')
     plt.show()
 
 
+
+
+    plt.figure()
+    plt.plot(num_retained, test_accs, marker='o', linestyle='-', color='blue')
+    plt.xlabel('Number of  Retained Neurons')
+    plt.ylabel('Test Accuracy After Pruning')
+    plt.title('Test Accuracy vs Retained Neurons')
+    plt.grid(True)
+
+    # for x, y in zip(num_retained, test_accs):
+    #     plt.text(x, y + 0.002, f'{x}', fontsize=8, ha='left', va='bottom')  # 稍微上移避免遮挡
+
+    for i, (x, y) in enumerate(zip(num_retained, test_accs)):
+        offset = 0.002 if i % 2 == 0 else -0.004  # 偶数向上、奇数向下
+        plt.text(x, y + offset, f'{x}', fontsize=8, ha='center', va='bottom' if offset > 0 else 'top')
+
+    plt.tight_layout()
+    plt.savefig(
+        f'test_acc_vs_retained_neurons_snr_{args.snr}_start_fsr_{args.fsr_threshold}_lambda_{args.regular_lambda}_period_slow_limit_4.png')
+    plt.show()
+
+
+
+    print(f"{'Step':<10}{'Pruned':<10}{'Retained':<15}{'Accuracy'}")
+    print("-" * 45)
+    for i, (p, r, acc) in enumerate(zip(pruned_counts, num_retained, test_accs), start=1):
+        print(f"{i:<10}{p:<10}{r:<15}{acc:.4f}")
 
 
 if __name__ == '__main__':
