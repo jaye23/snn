@@ -55,6 +55,7 @@ class MultiPathChannel(nn.Module):
         return h
 
 
+
 class DVSGestureNet(nn.Module):
     def __init__(self, channels, spiking_neuron: callable = None, PDP=None, snr=None, device=None, *args, **kwargs):
         # channels=128：每层卷积的通道数，默认是 128
@@ -67,9 +68,10 @@ class DVSGestureNet(nn.Module):
         # --- ADDED: FSR 统计属性 for the target FC spiking layer ---
         self.spike_counts = torch.zeros(512, device=self.device)
         self.time_steps = 0  # 用于累积 T * B
-        self.register_buffer('pruning_mask_fc',
-                             torch.ones(self.spike_counts.shape))  # 新增：注册一个pruning_mask。register_buffer会将其作为模型状态的一部分
-        self.mask = torch.ones_like(self.pruning_mask_fc)
+        # self.register_buffer('pruning_mask_fc',
+        #                      torch.ones(self.spike_counts.shape))  # 新增：注册一个pruning_mask。register_buffer会将其作为模型状态的一部分
+        # self.mask = torch.ones_like(self.pruning_mask_fc)
+        self.mask = torch.ones(self.spike_counts.shape,device=self.device)
         conv = []
         for i in range(5):  # 5 层网络
             if conv.__len__() == 0:
@@ -119,7 +121,7 @@ class DVSGestureNet(nn.Module):
         x = self.fc(x)
         x = self.sn(x)
         # 新增：应用剪枝掩码
-        x = x * self.pruning_mask_fc
+        x = x * self.mask.view(1, 1, -1)
         # ADD：加入正则项
         # .sum() 将所有维度的脉冲加起来，得到一个标量值
         total_spikes_in_batch = x.sum()
@@ -148,11 +150,11 @@ class DVSGestureNet(nn.Module):
         x = self.channel(x)  # 通过多径信道
         #print("Shape after channel:", x.shape)  # 打印 `x` 的实际形状
         x = x.view(T, batch_size, 512)  # 变回 `[T, Batch, Channels, H, W]`
-        #print("Shape after view:", x.shape)
+        print("Shape after view:", x.shape)
         x = self.conv_fc(x)  # 进入全连接层进行分类
         return x,total_spikes_in_batch
 
-    def prune_fading_neurons(self, fsr_threshold=0.07):
+    def prune_fading_neurons(self, fsr_threshold):
         fsr_per_neuron = self.spike_counts / self.time_steps
         print('FSR before prune:', fsr_per_neuron)
 
@@ -164,15 +166,21 @@ class DVSGestureNet(nn.Module):
             # 将需要剪掉的神经元对应位置设为0
             self.mask[neurons_to_prune_indices] = 0.0
 
-            # 更新模型中的掩码
-            self.pruning_mask_fc.data = self.mask
+            print('mask:',self.mask)
 
             # 统计剪枝后的保留神经元数量和总数量
-            num_retained = int(self.pruning_mask_fc.sum().item())
-            num_total = self.pruning_mask_fc.numel()
+            num_retained = int(self.mask.sum().item())
+            num_total = self.mask.numel()
+
+            # # 更新模型中的掩码
+            # self.pruning_mask_fc = self.mask
+            #
+            # # 统计剪枝后的保留神经元数量和总数量
+            # num_retained = int(self.pruning_mask_fc.sum().item())
+            # num_total = self.pruning_mask_fc.numel()
             # 统计剪枝后的保留神经元比例
             retained_ratio = num_retained / num_total
-            print(f"    剪枝完成。神经元保留率: {retained_ratio.item():.2%}")
+            print(f"    剪枝完成。神经元保留率: {retained_ratio:.2%}")
             print(f"    剪枝完成。保留神经元数目: {num_retained}")
 
         else:
