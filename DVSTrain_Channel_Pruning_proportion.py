@@ -8,6 +8,7 @@ import os
 import argparse
 import datetime
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 
 class RandomTranslate:
     def __init__(self, max_offset=25):
@@ -32,7 +33,7 @@ def main():
     parser.add_argument('-T', default=16, type=int, help='simulating time-steps')
     parser.add_argument('-device', default='cuda:1', help='device')
     parser.add_argument('-b', default=32, type=int, help='batch size')
-    parser.add_argument('-epochs', default=500, type=int, metavar='N',
+    parser.add_argument('-epochs', default=400, type=int, metavar='N',
                         help='number of total epochs to run')
     parser.add_argument('-j', default=24, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
@@ -57,13 +58,13 @@ def main():
                         help='loss threshold to trigger pruning')
     parser.add_argument('-fsr-threshold', type=float, default=0.25,
                         help='FSR threshold for pruning')  # 改一下
-    parser.add_argument('-regular-lambda', type=float, default=1e-3,
+    parser.add_argument('-regular-lambda', type=float, default=1e-8,
                         help='regularization strength')  # 改一下1e-3  shell脚本跑多个参数，保留神经元到100以下
     parser.add_argument('-min-neurons-threshold', type=int, default=10,
                         help='minimum number of neurons to stop pruning')
     parser.add_argument('-prune-period', type=int, default=20,
                         help='pruning cycle in epochs (perform pruning every N epochs once triggered)')
-    parser.add_argument('-s', type=int, default=1,
+    parser.add_argument('-s', type=int, default=3,
                         help='the time that train the code')
     parser.add_argument('-r', type=int, default=1,
                         help='load r_th date')
@@ -148,7 +149,7 @@ def main():
 
     start_epoch = 0
     try:
-        start_epoch, _ , train_acc_list, test_acc_list, epoch_list,spearman_list, pearson_list,pruning_started, prune_stopped, first_prune_epoch, pruning_count, prune_check, neuron_acc_history,prune_epoch,num_retained= load_checkpoint(net, optimizer, lr_scheduler, f'checkpoints_{args.r}/checkpoint_epoch_176.pth')
+        start_epoch, _ , train_acc_list, test_acc_list, epoch_list,spearman_list, pearson_list,pruning_started, prune_stopped, first_prune_epoch, pruning_count, prune_check, neuron_acc_history,prune_epoch,num_retained= load_checkpoint(net, optimizer, lr_scheduler, f'checkpoints_ratio_{args.r}/checkpoint_epoch_289.pth')
         start_epoch += 1  # 从下一个 epoch 开始
 
     except FileNotFoundError:
@@ -238,6 +239,11 @@ def main():
 
         # if not pruning_started and test_loss <= args.prune_loss_threshold and test_acc >= args.prune_acc_threshold:
         prune_check = 0
+        try:
+            num_retained
+        except NameError:
+            num_retained = 512
+            
         if num_retained > 60:
             # if (epoch - first_prune_epoch) % args.prune_period == 0 and train_acc >= 0.98:# 如果已开始剪枝，继续每隔20个epoch剪
             if  train_acc >= 0.98:
@@ -300,20 +306,16 @@ def main():
         test_acc_list.append(test_acc)
         epoch_list.append(epoch)
 
-        try:
-            num_retained
-        except NameError:
-            num_retained = 512
 
         if epoch == 150:
-            save_checkpoint(net, optimizer, epoch, loss, lr_scheduler, dir_path=f'checkpoints_{args.s}/',
+            save_checkpoint(net, optimizer, epoch, loss, lr_scheduler, dir_path=f'checkpoints_ratio_{args.s}/',
                             train_acc_list=train_acc_list, test_acc_list=test_acc_list, epoch_list=epoch_list,
                             spearman_list=spearman_list, pearson_list=pearson_list,pruning_started=pruning_started,
                             prune_stopped=prune_stopped,first_prune_epoch=first_prune_epoch,pruning_count=pruning_count,
                             prune_check=prune_check,neuron_acc_history=neuron_acc_history,prune_epoch=prune_epoch, num_retained= num_retained)
 
         elif prune_check == 1:
-            save_checkpoint(net, optimizer, epoch, loss, lr_scheduler, dir_path=f'checkpoints_{args.s}/',
+            save_checkpoint(net, optimizer, epoch, loss, lr_scheduler, dir_path=f'checkpoints_ratio_{args.s}/',
                             train_acc_list=train_acc_list, test_acc_list=test_acc_list, epoch_list=epoch_list,
                             spearman_list=spearman_list, pearson_list=pearson_list,pruning_started=pruning_started,
                             prune_stopped=prune_stopped,first_prune_epoch=first_prune_epoch,pruning_count=pruning_count,
@@ -339,19 +341,26 @@ def main():
     # 剪枝点：画垂直线 + 标注 + 点
     for i, prune_ep in enumerate(prune_epoch):
         plt.axvline(x=prune_ep, color='red', linestyle='--', alpha=0.7)
-        plt.text(prune_ep,
-                 max(max(train_acc_list), max(test_acc_list)) * 0.95,
-                 f'Prune #{i + 1}',
-                 rotation=90,
-                 color='red',
-                 fontsize=8,
-                 ha='right',
-                 va='top')
+
+        if (i + 1) in [14, 15]:
+            plt.text(prune_ep,
+                     max(max(train_acc_list), max(test_acc_list)) * 0.95,
+                     f'compressing #{i + 1}',
+                     rotation=90,
+                     color='red',
+                     fontsize=8,
+                     ha='right',
+                     va='top')
+
+    compression_line = mlines.Line2D([], [], color='red', linestyle='--', label='compressing')
 
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
     plt.title('Epoch vs Accuracy (Train & Test)')
-    plt.legend()  # 自动根据 label 添加图例
+    handles, labels = plt.gca().get_legend_handles_labels()
+    handles.append(compression_line)
+    labels.append('compressing')
+    plt.legend(handles, labels, loc='lower right')
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(
@@ -405,12 +414,19 @@ def main():
 
 
     # ************ table *********
-    print(f"{'Step':<10}{'Epoch':<10}{'Pruned':<10}{'Retained':<12}{'Accuracy':<10}{'Spearman':<10}{'Pearson'}")
-    print("-" * 80)
+    # print(f"{'Step':<10}{'Epoch':<10}{'Pruned':<10}{'Retained':<12}{'Accuracy':<10}{'Spearman':<10}{'Pearson'}")
+    # print("-" * 80)
+    #
+    # for i, (p, r, acc, prune_ep, s, pe) in enumerate(zip(
+    #         pruned_counts, num_retained, test_accs, prune_epoch, spearman_list, pearson_list), start=1):
+    #     print(f"{i:<10}{prune_ep:<10}{p:<10}{r:<12}{acc:<10.4f}{s:<10.4f}{pe:.4f}")
 
-    for i, (p, r, acc, prune_ep, s, pe) in enumerate(zip(
-            pruned_counts, num_retained, test_accs, prune_epoch, spearman_list, pearson_list), start=1):
-        print(f"{i:<10}{prune_ep:<10}{p:<10}{r:<12}{acc:<10.4f}{s:<10.4f}{pe:.4f}")
+    print(f"{'Step':<10}{'Epoch':<10}{'Pruned':<10}{'Retained':<12}{'Accuracy':<10}")
+    print("-" * 60)
+
+    for i, (p, r, acc, prune_ep) in enumerate(zip(
+            pruned_counts, num_retained, test_accs, prune_epoch), start=1):
+        print(f"{i:<10}{prune_ep:<10}{p:<10}{r:<12}{acc:<10.4f}")
 
 
 if __name__ == '__main__':

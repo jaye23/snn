@@ -81,7 +81,7 @@ class DVSGestureNet(nn.Module):
             conv.append(nn.MaxPool2d(2, 2))
         conv.append(nn.Flatten())  # 展平用于全连接
         conv.append(nn.Dropout(0.5))
-        conv.append(nn.Linear(channels * 4 * 4, 512))
+        conv.append(nn.Linear(channels * 4 * 4, 10))
         conv.append(nn.ReLU(inplace=True))
         # *********************从这里加channel*******************
         self.conv_layers = nn.Sequential(*conv)  # CNN 处理 DVS 数据
@@ -90,12 +90,12 @@ class DVSGestureNet(nn.Module):
         # **多径信道**
 
         self.conv_fc = nn.Sequential(
-            nn.Linear(512, 512),
+            nn.Linear(10, 10),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
-            nn.Linear(512, 110),
+            nn.Linear(10, 40),
             nn.ReLU(inplace=True),
-            nn.Linear(110, 11)  # 最终输出10类
+            nn.Linear(40, 11)  # 最终输出10类
         )
 
     def forward(self, x: torch.Tensor):

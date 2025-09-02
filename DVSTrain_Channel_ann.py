@@ -1,10 +1,10 @@
 import torch
 import random
-import sys
+
 import torch.nn.functional as F
 from torch.cuda import amp
 from spikingjelly.activation_based import functional, surrogate, neuron
-from spikingjelly.activation_based.model import parametric_lif_net
+
 from spikingjelly.datasets.dvs128_gesture import DVS128Gesture
 import DVSNet_Channel_ann
 from torch.utils.data import DataLoader
@@ -15,7 +15,7 @@ import os
 import argparse
 import datetime
 import matplotlib.pyplot as plt
-from IPython.display import Image, display
+
 
 
 class RandomTranslate:
@@ -36,11 +36,11 @@ def main():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(description='Classify DVS Gesture')
     parser.add_argument('-T', default=16, type=int, help='simulating time-steps')
-    parser.add_argument('-device', default='cpu', help='device')
-    parser.add_argument('-b', default=16, type=int, help='batch size')
-    parser.add_argument('-epochs', default=64, type=int, metavar='N',
+    parser.add_argument('-device', default='cuda:1', help='device')
+    parser.add_argument('-b', default=32, type=int, help='batch size')
+    parser.add_argument('-epochs', default=400, type=int, metavar='N',
                         help='number of total epochs to run')
-    parser.add_argument('-j', default=4, type=int, metavar='N',
+    parser.add_argument('-j', default=24, type=int, metavar='N',
                         help='number of data loading workers (default: 4)')
     parser.add_argument('-data-dir', default=os.path.join(current_dir, "datasets", "DVS"), type=str, help='root dir of DVS Gesture dataset')
     parser.add_argument('-out-dir', type=str, default='./logs', help='root dir for saving logs and checkpoint')
@@ -73,6 +73,7 @@ def main():
     net.to(args.device)
 
     train_set = DVS128Gesture(root=args.data_dir, train=True, data_type='frame', frames_number=args.T, split_by='number',transform = transforms.Compose([toTensor(),RandomTranslate(max_offset=25)]))
+    #数据增强可以改小一点；  按数量剪枝； 剪枝效率高一点，epoch数目小一点 384； ！ fisher information； baseline对比网络
     test_set = DVS128Gesture(root=args.data_dir, train=False, data_type='frame', frames_number=args.T, split_by='number')
 
 
@@ -270,6 +271,9 @@ def main():
     # 画测试准确率曲线
     plt.plot(epoch_list, test_acc_list, label=f'Test Accuracy (SNR={args.snr})', color='black')
 
+    plt.axhline(y=0.95, color='green', linestyle='--', linewidth=1, alpha=0.8, label='Accuracy = 0.95')
+    plt.axhline(y=0.90, color='orange', linestyle='--', linewidth=1, alpha=0.8, label='Accuracy = 0.90')
+
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
     plt.title('Epoch vs Accuracy (Train & Test)')
@@ -277,7 +281,7 @@ def main():
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(
-        f'acc_snr_{args.snr}_channel_ann.png')
+        f'acc_snr_{args.snr}_channel_ann_10N.png')
     plt.show()
 
 
